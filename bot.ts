@@ -15,14 +15,9 @@ const USDC_TYPE_SUFFIX = '::usdc::usdc';
 const DEFAULT_TRADE_SIZES_SUI = ['0.1', '0.5', '1'];
 const DEFAULT_DEEPBOOK_TICKS = 50;
 const DEFAULT_MAX_SOURCE_LATENCY_MS = 5000;
+const DEFAULT_SCAN_INTERVAL_MS = 10000;
 
 type TradeDirection = 'buy_cetus_sell_deepbook' | 'buy_deepbook_sell_cetus';
-
-type CetusQuote = {
-  estimated_amount_in: string | number;
-  estimated_amount_out: string | number;
-  is_exceed: boolean;
-};
 
 function parsePositiveDecimalList(value: string | undefined, name: string, defaults: string[]): Decimal[] {
   const values = value?.split(',').map((item) => item.trim()) ?? defaults;
@@ -104,7 +99,7 @@ async function quoteCetus(
   usdcDecimals: number,
   direction: TradeDirection,
   suiSize: Decimal,
-): Promise<CetusQuote> {
+) {
   const sellingSui = direction === 'buy_deepbook_sell_cetus';
   const aToB = sellingSui ? suiIsA : !suiIsA;
   const coinTypeA = pool.coin_type_a;
@@ -216,6 +211,11 @@ async function main() {
     'MAX_SOURCE_LATENCY_MS',
     DEFAULT_MAX_SOURCE_LATENCY_MS,
   );
+  const scanIntervalMs = parsePositiveInteger(
+    process.env.SCAN_INTERVAL_MS,
+    'SCAN_INTERVAL_MS',
+    DEFAULT_SCAN_INTERVAL_MS,
+  );
   const senderAddress = process.env.SUI_ADDRESS || ZERO_ADDRESS;
   const client = new SuiGrpcClient({ baseUrl: rpcUrl, network: 'mainnet' });
   const cetus = CetusClmmSDK.createSDK({ env: 'mainnet', sui_client: client });
@@ -227,10 +227,13 @@ async function main() {
 
   console.log('--- Read-only SUI/USDC arbitrage monitor ---');
   console.log('Execution is disabled; this process only fetches and evaluates quotes.');
+  console.log(`Repeating scans every ${scanIntervalMs} ms after each scan completes.`);
   if (!gasCostUsdc) {
     console.warn('GAS_COST_USDC is unset: results exclude gas and cannot meet a net-profit threshold.');
   }
 
+  while (true) {
+    try {
   const scanStartedAt = performance.now();
   const [poolResponse, orderbookResponse, tradeParamsResponse] = await Promise.all([
     cetus.Pool.getPool(CETUS_SUI_USDC_POOL).then((data) => ({
@@ -335,6 +338,11 @@ async function main() {
 
   console.log(`\nScan completed in ${(performance.now() - scanStartedAt).toFixed(0)} ms.`);
   console.log('These are estimates from independently sampled venues, not execution guarantees.');
+    } catch (error) {
+      console.error('Scan failed; retrying after the configured interval:', error);
+    }
+    await new Promise((resolve) => setTimeout(resolve, scanIntervalMs));
+  }
 }
 
 main().catch((error: unknown) => {
